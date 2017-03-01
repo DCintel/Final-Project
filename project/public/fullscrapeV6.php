@@ -1,0 +1,248 @@
+<?php
+
+    require ('../includes/config.php');
+    include_once('../includes/simple_html_dom.php');
+    
+    error_reporting(0);
+    
+    //$_GET['name'] = "Gunman Clive";
+    
+    if (empty($_GET['name']))
+    {
+        exit;
+    }
+    
+    //do an initial pull from database to see if scores already exist.
+    $initial = CS50::query('SELECT ign_review, gamespot_review, metacritic_review, gamesradar_review FROM gameinfo WHERE name=?', $_GET['name']);
+    
+    //create object to store and transmit score data. Fill with scores found in initial DB pull if found. Otherwise set to 0 to activate all scraper functions
+    if (($exists = count($initial)) !== 0)
+    {
+        $scores [] = [
+        "ign" => $initial[0]['ign_review'],
+        "gamespot" => $initial[0]['gamespot_review'],
+        "metacritic" => $initial[0]['metacritic_review'],
+        "gamesradar" => $initial[0]['gamesradar_review']
+        ];
+    }
+    else
+    {
+        $scores [] = [
+        "ign" => 0,
+        "gamespot" => 0,
+        "metacritic" => 0,
+        "gamesradar" => 0
+        ];
+    }
+    
+    //if any scores are misssing, scrape for them (can both update existing entries and find games not included in database)
+    if ($scores[0]['ign'] == 0 || $scores[0]['gamespot'] == 0 || $scores[0]['metacritic'] == 0 || $scores[0]['gamesradar'] == 0)
+    {
+        //modify name to fit urls. all urls use - for spaces, so the name must be reformatted before being inserted into urls
+        $gameformated = strtolower(preg_replace('/\s+/', "-", $_GET['name']));
+        
+        //create scraper dom used in both scraper functions
+        $html = new simple_html_dom();
+        
+        //if gamespot or metacritic scores are missing, scrape for them
+        if ($scores[0]['gamespot'] == 0 || $scores[0]['metacritic'] == 0)
+        {
+            //generate url
+            $gamespot_url = "http://www.gamespot.com/" . $gameformated . "/";
+         
+            if (($code = get_http_response_code($gamespot_url)) == "200")
+            {   
+              $html->load_file($gamespot_url);
+                
+                //get gamespot review. if absent, set to NA. 
+                if ($html && is_object($html) && isset($html))
+                {
+                    //get gamespot score
+                    $scores[0]["gamespot"] = $html->find('span[itemprop="ratingValue"]', 0);
+            
+                    if (is_object($scores[0]["gamespot"]))
+                    {
+                        $scores[0]["gamespot"] = preg_replace('/\s+/', '', ($scores[0]["gamespot"]->plaintext));
+                        CS50::query('UPDATE gameinfo SET gamespot_review = ? WHERE name = ?', $scores[0]["gamespot"], $_GET['name']);
+                    }
+            
+                    //get metacritic review. 
+                    $scores[0]["metacritic"]  = $html->find('a[data-event-tracking="Tracking|games_overview|Kubrick|Metascore"]',0);
+            
+                    if (is_object($scores[0]["metacritic"]))
+                    {
+                        $scores[0]["metacritic"] = $scores[0]["metacritic"]->plaintext;
+                        CS50::query('UPDATE gameinfo SET metacritic_review = ? WHERE name = ?', $scores[0]["metacritic"], $_GET['name']);
+                    }
+                }
+            }
+    
+    
+            //if no scores found for metacritic or gamespot, set to "N/A" for display purposes
+            if ($scores[0]["gamespot"] == null || $scores[0]["gamespot"] == 0 || $scores[0]["gamespot"] == "")
+                {
+                   $scores[0]["gamespot"] = "N/A";
+                }
+    
+            if ($scores[0]["metacritic"] == null || $scores[0]["metacritic"] == 0 || $scores[0]["metacritic"] == "")
+                {
+                   $scores[0]["metacritic"] = "N/A";
+                }
+            
+            
+            //clear dom in prep for potential loading of second website
+            $html->clear();
+        }
+        
+        
+        
+        //if gamesradar score is missing, scrape for it
+        if ($scores[0]['gamesradar'] == 0)
+        {
+            $gameformated = strtolower($gameformated);
+            $gamesradar_url = "https://www.gamesradar.com/" . $gameformated ."-review/";
+        
+            if (get_http_response_code($gamesradar_url) == "200")
+            {
+                $html->load_file($gamesradar_url);
+                $scores[0]['gamesradar'] = $html->find('meta[itemprop="ratingValue"]', 0);
+                
+                if ($scores[0]['gamesradar'] === null || $scores[0]['gamesradar'] === "" || $scores[0]['gamesradar'] === 0)
+                {
+                     $scores[0]['gamesradar'] = "N/A"; 
+                }
+                else
+                {
+                     $scores[0]['gamesradar'] = $scores[0]['gamesradar']->content;
+                     CS50::query('UPDATE gameinfo SET gamesradar_review = ? WHERE name = ?', $scores[0]["gamesradar"], $_GET['name']);
+                }
+            }
+            else
+            {
+                $scores[0]['gamesradar'] = "N/A";
+            }
+            
+            $html->clear;
+        }
+        
+        
+        
+        //if ign score is missing, scrape for it
+        if ($scores[0]['ign'] == 0)
+        {
+            //variable necessary to check for clean access to website. necessary for secondary checks for special formats
+            $access = false;
+            
+            //setup user agent to allow access to ign.com (site blocks access if no agent provided)
+            $context = stream_context_create(array(
+                'http' => array(
+                'header' => array('User-Agent: Mozilla/5.0 (Windows; U; Windows NT 6.1; rv:2.2) Gecko/20110201'),
+                ),
+            ));
+            
+            //generate url
+            $ign_url = "http://www.ign.com/articles/" . $gameformated;
+        
+            //list of tags possibly used to end ign url. these are randomly used, so they must always be generated just in case
+            $ign_urls = [
+                'new' => '-review/',
+                'old' => '/',
+                'pc' => '-pc-review/',
+                'wiiu' => '-wii-u-review/',
+                'series1' => '-1/',
+                'series2' => '-2/',
+                'series3' => '-3/',
+                ];    
+        
+            //check all possible url formats for a hit. once found, break to move on.
+            foreach($ign_urls as $url_tag)
+            {
+                $current_ign_url = $ign_url . $url_tag;
+                
+                $html = file_get_html($current_ign_url, false, $context);
+                
+                if ($html && is_object($html) && isset($html))
+                    {
+                        $scores[0]["ign"] = $html->find('span[class="score"]', 0);
+                    
+                        $ign_url_final = $current_ign_url;
+                
+                        $access = true;
+                
+                        break;
+                    }
+                //}
+            }
+    
+            //if site is accessed but no score found, review is multiple pages long or is of a unique format. check for unique format first, then multipage format
+            
+            //1. unique format
+            if ($scores[0]["ign"] == "" && $access == true)
+            {
+                $ign_score = preg_replace('/\s+/', "", $html->find('dd[class="game-rating-score]', 0));
+            } 
+        
+            //2. multiple pages (score is found on last page of review)
+            if ($scores[0]["ign"] == "" && $access == true)
+            {
+                //date of publication must be included in url to access later pages of a review. Location of date is pulled first, then raw date is taken via substr. Finally, it is formatted to have /year/month/day/ structure as in the url.
+                $date = $html->find('meta[itemprop="datePublished"]', 0);
+                $dateformated = (preg_replace('/-/', '/', (substr($date->content, 0, 10)))) . "/";
+        
+                $temp_url = substr_replace($ign_url_final, $dateformated, 28, 0) . "?page=";
+            
+                //cycle backwards through page requests to hit the final page of the review where the score is located. check page for all possible review storage locations.
+                for ($i = 10; $i != 1; $i--)
+                {
+                    $ign_url_final = $temp_url . $i;
+                    
+                    $html->clear();
+                    $html = file_get_html($ign_url_final, false, $context);
+                    
+                    if (is_object($html))
+                    {
+                        //scores are found withing different ids
+                        if (($score = $html->find('span[class="score"]', 0)) != false)
+                        {
+                           $scores[0]["ign"] = $score;
+                           break;
+                        }
+                    
+                        if (($newscore1 = $html->find('dd[class="game-rating-score]', 0)) != false)
+                        {
+                            $scores[0]["ign"] = $newscore1;
+                            break;
+                        }
+                    
+                        if (($newscore2 = $html->find('span[itemprop="reviewRating"]', 0)) != false)
+                        {
+                            $scores[0]["ign"] = $newscore2;
+                            break;
+                        }
+                    
+                        if (($newscore3 = $html->find('span[itemprop="ratingValue"]', 0)) != false)
+                        {
+                             $scores[0]["ign"] = $newscore3->plaintext;
+                             break;
+                        }
+                    }
+                }
+            }
+        
+            //if IGN score is found, remove tags and space to leave only the content. otherwise set to N/A for display purposes.
+            if ($scores[0]["ign"] == 0)
+            {
+                $scores[0]["ign"] = "N/A"; //$scores[0]["ign"] = preg_replace('/\s+/', '', (strip_tags($scores[0]["ign"])));
+            }
+            else
+            {
+                $scores[0]["ign"] = preg_replace('/\s+/', '', (strip_tags($scores[0]["ign"])));
+                CS50::query('UPDATE gameinfo SET ign_review = ? WHERE name = ?', $scores[0]["ign"], $_GET['name']);
+            }
+        }
+    }
+
+    //output scores as JSON (pretty-printed for debugging convenience)
+    //header("Content-type: application/json");
+    print(json_encode($scores, JSON_PRETTY_PRINT));
+?>
