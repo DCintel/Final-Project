@@ -13,7 +13,8 @@ The other two databases have a little more detailed information, but their manag
 must create a username and password. These are then stored (the password being hashed for security) in a database along with a unique ID 
 which is used to keep track of their review submissions and to allow for extended session login via cookies (https://github.com/DCintel/
 Final-Project/blob/master/project/public/register.php) . When users create a review, they enter the game name, their interest level, their score out of 10, and an optional comment (a 200 word, tweet-like summary of their opinion). If users have not already made a review of that game, all of this information is stored in its own database (https://github.com/DCintel/FinalProject/blob/master/project/ public/add_review.php) . Additionally, the score given is averaged with all other user scores of the same game and that new aggregate score is updated in the main review database. The comments saved here are also presented to the user whenever they search for review scores. 
-     The final feature worth mentioning is that all website functions are achieved via Javascript AJAX requests. All new information 
+
+The final feature worth mentioning is that all website functions are achieved via Javascript AJAX requests. All new information 
 display and all navigation is achieved asynchronously, so the website feels as quick and responsive as possible while also limiting load 
 times.
 
